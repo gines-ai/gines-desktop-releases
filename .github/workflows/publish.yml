@@ -1,0 +1,74 @@
+# Publica uma versão do GINES Desktop. Quem dispara é o pipeline PRIVADO do gines-client (desktop.yml):
+# ele empurra, com uma deploy key de escrita, um branch temporário `publish/v<versão>-<run>` com o .deb
+# PARTIDO em pedaços (o git recusa arquivo acima de 100 MB) e um meta.json. Aqui o pacote é remontado,
+# conferido pelo sha256, publicado como release com o GITHUB_TOKEN deste repositório, e o branch é apagado.
+# O código do app nunca passa por aqui: só o pacote pronto.
+name: publish
+
+on:
+  push:
+    branches: ['publish/**']
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remonta e confere o pacote
+        run: |
+          set -euo pipefail
+          meta=pending/meta.json
+          version="$(jq -r .version "$meta")"
+          file="$(jq -r .file "$meta")"
+          sum="$(jq -r .sha256 "$meta")"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::versão inválida: $version"; exit 1; }
+          [[ "$file" == "gines-$version-amd64.deb" ]] || { echo "::error::nome de arquivo inesperado: $file"; exit 1; }
+          [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::sha256 inválido"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/out"
+          cat pending/parts/"$file".part-* > "$RUNNER_TEMP/out/$file"
+          echo "$sum  $file" > "$RUNNER_TEMP/out/$file.sha256"
+          (cd "$RUNNER_TEMP/out" && sha256sum -c "$file.sha256")
+          dpkg-deb -f "$RUNNER_TEMP/out/$file" Package Version | tee /dev/stderr | grep -qx "Version: $version" \
+            || { echo "::error::o .deb não é da versão $version"; exit 1; }
+          if [ -f pending/latest-linux.yml ]; then cp pending/latest-linux.yml "$RUNNER_TEMP/out/"; fi
+          {
+            echo "version=$version"; echo "file=$file"; echo "sum=$sum"
+            echo "commit=$(jq -r .commit "$meta")"; echo "prerelease=$(jq -r .prerelease "$meta")"
+          } >> "$GITHUB_ENV"
+          ls -l "$RUNNER_TEMP/out"
+
+      - name: Cria a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::a release v$version já existe; suba a versão no apps/electron/package.json"; exit 1; fi
+          flag=""; [ "$prerelease" = "true" ] && flag="--prerelease"
+          cat > "$RUNNER_TEMP/notes.md" <<NOTES
+          **Arquivo:** \`$file\` (Ubuntu/Debian, x86-64)
+          **sha256:** \`$sum\`
+          **Origem:** \`gines-client\` commit \`${commit:0:7}\`
+
+          \`\`\`sh
+          sha256sum -c $file.sha256
+          sudo apt install ./$file
+          \`\`\`
+          NOTES
+          sed -i 's/^          //' "$RUNNER_TEMP/notes.md"
+          gh release create "v$version" "$RUNNER_TEMP"/out/* -R "$GITHUB_REPOSITORY" --target main \
+            --title "GINES Desktop $version (Linux)" --notes-file "$RUNNER_TEMP/notes.md" $flag
+          echo "publicado: https://github.com/$GITHUB_REPOSITORY/releases/tag/v$version"
+
+      - name: Apaga o branch temporário
+        if: always()
+        run: git push origin --delete "$GITHUB_REF_NAME"
