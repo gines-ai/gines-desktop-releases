@@ -72,7 +72,9 @@ jobs:
             for a in arm64 x64; do
               z="$RUNNER_TEMP/out/gines-$version-mac-$a.zip"
               [ -f "$z" ] || { echo "::error::falta gines-$version-mac-$a.zip"; exit 1; }
-              unzip -p "$z" GINES.app/Contents/Info.plist | grep -A1 CFBundleShortVersionString | grep -q "<string>$version</string>" \
+              # O Info.plist do app (a primeira pasta do .zip; o nome do .app não é fixo), não o dos auxiliares.
+              top="$(unzip -Z1 "$z" | head -1)"
+              unzip -p "$z" "${top}Contents/Info.plist" | grep -A1 CFBundleShortVersionString | grep -q "<string>$version</string>" \
                 || { echo "::error::o .zip $a não é da versão $version"; exit 1; }
             done
             [ -f pending/latest-mac.yml ] || { echo "::error::falta latest-mac.yml"; exit 1; }
