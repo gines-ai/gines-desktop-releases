@@ -1,7 +1,8 @@
 # Publica uma versão do GINES Desktop. Quem dispara é o pipeline PRIVADO do gines-client (desktop.yml):
-# ele empurra, com uma deploy key de escrita, um branch temporário `publish/v<versão>-<run>` com o .deb
-# PARTIDO em pedaços (o git recusa arquivo acima de 100 MB) e um meta.json. Aqui o pacote é remontado,
-# conferido pelo sha256, publicado como release com o GITHUB_TOKEN deste repositório, e o branch é apagado.
+# ele empurra, com uma deploy key de escrita, um branch temporário `publish/v<versão>-<run>` com os pacotes
+# PARTIDOS em pedaços (o git recusa arquivo acima de 100 MB) e um meta.json: o .deb do Linux e, desde a 0.4.26,
+# os .dmg/.zip do macOS (`files`). Aqui cada pacote é remontado e conferido pelo sha256, a release é publicada
+# com o GITHUB_TOKEN deste repositório, e o branch é apagado.
 # O código do app nunca passa por aqui: só o pacote pronto.
 name: publish
 
@@ -32,17 +33,39 @@ jobs:
           sum="$(jq -r .sha256 "$meta")"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::versão inválida: $version"; exit 1; }
           [[ "$file" == "gines-$version-amd64.deb" ]] || { echo "::error::nome de arquivo inesperado: $file"; exit 1; }
-          [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::sha256 inválido"; exit 1; }
           mkdir -p "$RUNNER_TEMP/out"
-          cat pending/parts/"$file".part-* > "$RUNNER_TEMP/out/$file"
-          echo "$sum  $file" > "$RUNNER_TEMP/out/$file.sha256"
-          (cd "$RUNNER_TEMP/out" && sha256sum -c "$file.sha256")
+          # meta.json antigo (só o .deb) ou novo (`files`, com o .deb e os pacotes do macOS).
+          jq -c '.files // [{file: .file, sha256: .sha256}] | .[]' "$meta" > "$RUNNER_TEMP/files.jsonl"
+          mac=false
+          while IFS= read -r row; do
+            f="$(jq -r .file <<<"$row")"; s="$(jq -r .sha256 <<<"$row")"
+            [[ "$s" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::sha256 inválido: $f"; exit 1; }
+            case "$f" in
+              "gines-$version-amd64.deb") ;;
+              "gines-$version-arm64.dmg"|"gines-$version-x64.dmg"|"gines-$version-mac-arm64.zip"|"gines-$version-mac-x64.zip") mac=true ;;
+              *) echo "::error::nome de arquivo inesperado: $f"; exit 1 ;;
+            esac
+            cat pending/parts/"$f".part-* > "$RUNNER_TEMP/out/$f"
+            echo "$s  $f" > "$RUNNER_TEMP/out/$f.sha256"
+            (cd "$RUNNER_TEMP/out" && sha256sum -c "$f.sha256")
+          done < "$RUNNER_TEMP/files.jsonl"
           dpkg-deb -f "$RUNNER_TEMP/out/$file" Package Version | tee /dev/stderr | grep -qx "Version: $version" \
             || { echo "::error::o .deb não é da versão $version"; exit 1; }
+          if [ "$mac" = true ]; then
+            for a in arm64 x64; do
+              z="$RUNNER_TEMP/out/gines-$version-mac-$a.zip"
+              [ -f "$z" ] || { echo "::error::falta gines-$version-mac-$a.zip"; exit 1; }
+              unzip -p "$z" GINES.app/Contents/Info.plist | grep -A1 CFBundleShortVersionString | grep -q "<string>$version</string>" \
+                || { echo "::error::o .zip $a não é da versão $version"; exit 1; }
+            done
+            [ -f pending/latest-mac.yml ] || { echo "::error::falta latest-mac.yml"; exit 1; }
+            cp pending/latest-mac.yml "$RUNNER_TEMP/out/"
+          fi
           if [ -f pending/latest-linux.yml ]; then cp pending/latest-linux.yml "$RUNNER_TEMP/out/"; fi
+          for b in pending/*.blockmap; do [ -f "$b" ] && cp "$b" "$RUNNER_TEMP/out/"; done
           {
             echo "version=$version"; echo "file=$file"; echo "sum=$sum"
-            echo "commit=$(jq -r .commit "$meta")"; echo "prerelease=$(jq -r .prerelease "$meta")"
+            echo "commit=$(jq -r .commit "$meta")"; echo "prerelease=$(jq -r .prerelease "$meta")"; echo "mac=$mac"
           } >> "$GITHUB_ENV"
           ls -l "$RUNNER_TEMP/out"
 
@@ -55,8 +78,7 @@ jobs:
             echo "::error::a release v$version já existe; suba a versão no apps/electron/package.json"; exit 1; fi
           flag=""; [ "$prerelease" = "true" ] && flag="--prerelease"
           cat > "$RUNNER_TEMP/notes.md" <<NOTES
-          **Arquivo:** \`$file\` (Ubuntu/Debian, x86-64)
-          **sha256:** \`$sum\`
+          **Linux:** \`$file\` (Ubuntu/Debian, x86-64), sha256 \`$sum\`
           **Origem:** \`gines-client\` commit \`${commit:0:7}\`
 
           \`\`\`sh
@@ -64,9 +86,18 @@ jobs:
           sudo apt install ./$file
           \`\`\`
           NOTES
+          if [ "$mac" = true ]; then
+            cat >> "$RUNNER_TEMP/notes.md" <<NOTES
+
+          **macOS 12 ou mais novo:** \`gines-$version-arm64.dmg\` (Apple Silicon) ou \`gines-$version-x64.dmg\` (Intel).
+          Assinado (Developer ID) e notarizado pela Apple. Arraste o GINES para Aplicativos; as próximas versões chegam
+          sozinhas. Os \`.zip\` são do atualizador automático.
+          NOTES
+          fi
           sed -i 's/^          //' "$RUNNER_TEMP/notes.md"
+          title="GINES Desktop $version (Linux)"; [ "$mac" = true ] && title="GINES Desktop $version (Linux e macOS)"
           gh release create "v$version" "$RUNNER_TEMP"/out/* -R "$GITHUB_REPOSITORY" --target main \
-            --title "GINES Desktop $version (Linux)" --notes-file "$RUNNER_TEMP/notes.md" $flag
+            --title "$title" --notes-file "$RUNNER_TEMP/notes.md" $flag
           echo "publicado: https://github.com/$GITHUB_REPOSITORY/releases/tag/v$version"
 
       - name: Apaga o branch temporário
