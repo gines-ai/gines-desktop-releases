@@ -3,7 +3,7 @@
 Instaladores do app desktop do GINES (Linux e macOS), gerados pelo pipeline do repositório `gines-client`. Os arquivos ficam em
 [Releases](https://github.com/gines-ai/gines-desktop-releases/releases); cada versão traz o `sha256` de cada pacote.
 
-## Linux (Ubuntu/Debian)
+## Linux (Ubuntu, Debian)
 
 ```sh
 sudo apt install ./gines-<versão>-amd64.deb
@@ -13,6 +13,17 @@ Instala em `/opt/GINES`, cria o comando `gines` e, no Ubuntu 24.04 ou mais novo,
 `/etc/apparmor.d/gines`, que permite ao app rodar com o sandbox do sistema. O app não roda sem sandbox.
 
 Remover: `sudo apt remove gines` (os dados ficam em `~/.config/GINES`).
+
+## Linux (Fedora, RHEL, openSUSE)
+
+```sh
+sudo dnf install ./gines-<versão>-x86_64.rpm       # openSUSE: sudo zypper install ./gines-<versão>-x86_64.rpm
+```
+
+Instala em `/opt/GINES` e cria o comando `gines`. As próximas versões chegam sozinhas (Ajustes → Versão; o sistema
+pede a senha de administrador para instalar).
+
+Remover: `sudo dnf remove gines` (ou `sudo zypper remove gines`; os dados ficam em `~/.config/GINES`).
 
 ## macOS 12 ou mais novo
 

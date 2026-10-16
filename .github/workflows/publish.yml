@@ -1,7 +1,7 @@
 # Publica uma versão do GINES Desktop. Quem dispara é o pipeline PRIVADO do gines-client (desktop.yml):
 # ele empurra, com uma deploy key de escrita, um branch temporário `publish/v<versão>-<run>` com os pacotes
 # PARTIDOS em pedaços (o git recusa arquivo acima de 100 MB) e um meta.json: o .deb do Linux e, desde a 0.4.26,
-# os .dmg/.zip do macOS (`files`). Aqui cada pacote é remontado e conferido pelo sha256, a release é publicada
+# o .rpm e os .dmg/.zip do macOS (`files`). Aqui cada pacote é remontado e conferido pelo sha256, a release é publicada
 # com o GITHUB_TOKEN deste repositório, e o branch é apagado.
 # O código do app nunca passa por aqui: só o pacote pronto.
 name: publish
@@ -36,12 +36,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           # meta.json antigo (só o .deb) ou novo (`files`, com o .deb e os pacotes do macOS).
           jq -c '.files // [{file: .file, sha256: .sha256}] | .[]' "$meta" > "$RUNNER_TEMP/files.jsonl"
-          mac=false
+          mac=false; rpm=false
           while IFS= read -r row; do
             f="$(jq -r .file <<<"$row")"; s="$(jq -r .sha256 <<<"$row")"
             [[ "$s" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::sha256 inválido: $f"; exit 1; }
             case "$f" in
               "gines-$version-amd64.deb") ;;
+              "gines-$version-x86_64.rpm") rpm=true ;;
               "gines-$version-arm64.dmg"|"gines-$version-x64.dmg"|"gines-$version-mac-arm64.zip"|"gines-$version-mac-x64.zip") mac=true ;;
               *) echo "::error::nome de arquivo inesperado: $f"; exit 1 ;;
             esac
@@ -51,6 +52,11 @@ jobs:
           done < "$RUNNER_TEMP/files.jsonl"
           dpkg-deb -f "$RUNNER_TEMP/out/$file" Package Version | tee /dev/stderr | grep -qx "Version: $version" \
             || { echo "::error::o .deb não é da versão $version"; exit 1; }
+          if [ "$rpm" = true ]; then
+            command -v rpm >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq rpm; }
+            rpm -qp --qf '%{NAME} %{VERSION}\n' "$RUNNER_TEMP/out/gines-$version-x86_64.rpm" | tee /dev/stderr | grep -qx "gines $version" \
+              || { echo "::error::o .rpm não é da versão $version"; exit 1; }
+          fi
           if [ "$mac" = true ]; then
             for a in arm64 x64; do
               z="$RUNNER_TEMP/out/gines-$version-mac-$a.zip"
@@ -65,7 +71,7 @@ jobs:
           for b in pending/*.blockmap; do [ -f "$b" ] && cp "$b" "$RUNNER_TEMP/out/"; done
           {
             echo "version=$version"; echo "file=$file"; echo "sum=$sum"
-            echo "commit=$(jq -r .commit "$meta")"; echo "prerelease=$(jq -r .prerelease "$meta")"; echo "mac=$mac"
+            echo "commit=$(jq -r .commit "$meta")"; echo "prerelease=$(jq -r .prerelease "$meta")"; echo "mac=$mac"; echo "rpm=$rpm"
           } >> "$GITHUB_ENV"
           ls -l "$RUNNER_TEMP/out"
 
@@ -86,6 +92,16 @@ jobs:
           sudo apt install ./$file
           \`\`\`
           NOTES
+          if [ "$rpm" = true ]; then
+            cat >> "$RUNNER_TEMP/notes.md" <<NOTES
+
+          **Fedora/RHEL/openSUSE:** \`gines-$version-x86_64.rpm\`
+
+          \`\`\`sh
+          sudo dnf install ./gines-$version-x86_64.rpm      # openSUSE: sudo zypper install ./gines-$version-x86_64.rpm
+          \`\`\`
+          NOTES
+          fi
           if [ "$mac" = true ]; then
             cat >> "$RUNNER_TEMP/notes.md" <<NOTES
 
