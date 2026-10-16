@@ -6,7 +6,7 @@ Instaladores do app desktop do GINES (Linux e macOS), gerados pelo pipeline do r
 ## Linux (Ubuntu, Debian)
 
 ```sh
-sudo apt install ./gines-<versão>-amd64.deb
+sudo apt install ./gines-<versão>-amd64.deb      # ARM (Raspberry Pi 4/5 com sistema 64 bits, etc.): gines-<versão>-arm64.deb
 ```
 
 Instala em `/opt/GINES`, cria o comando `gines` e, no Ubuntu 24.04 ou mais novo, o perfil AppArmor
@@ -17,7 +17,7 @@ Remover: `sudo apt remove gines` (os dados ficam em `~/.config/GINES`).
 ## Linux (Fedora, RHEL, openSUSE)
 
 ```sh
-sudo dnf install ./gines-<versão>-x86_64.rpm       # openSUSE: sudo zypper install ./gines-<versão>-x86_64.rpm
+sudo dnf install ./gines-<versão>-x86_64.rpm       # ARM: gines-<versão>-aarch64.rpm; openSUSE: sudo zypper install
 ```
 
 Instala em `/opt/GINES` e cria o comando `gines`. As próximas versões chegam sozinhas (Ajustes → Versão; o sistema

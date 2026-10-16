@@ -36,13 +36,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/out"
           # meta.json antigo (só o .deb) ou novo (`files`, com o .deb e os pacotes do macOS).
           jq -c '.files // [{file: .file, sha256: .sha256}] | .[]' "$meta" > "$RUNNER_TEMP/files.jsonl"
-          mac=false; rpm=false
+          mac=false; rpm=false; arm=false
           while IFS= read -r row; do
             f="$(jq -r .file <<<"$row")"; s="$(jq -r .sha256 <<<"$row")"
             [[ "$s" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::sha256 inválido: $f"; exit 1; }
             case "$f" in
               "gines-$version-amd64.deb") ;;
+              "gines-$version-arm64.deb") arm=true ;;
               "gines-$version-x86_64.rpm") rpm=true ;;
+              "gines-$version-aarch64.rpm") rpm=true; arm=true ;;
               "gines-$version-arm64.dmg"|"gines-$version-x64.dmg"|"gines-$version-mac-arm64.zip"|"gines-$version-mac-x64.zip") mac=true ;;
               *) echo "::error::nome de arquivo inesperado: $f"; exit 1 ;;
             esac
@@ -52,10 +54,19 @@ jobs:
           done < "$RUNNER_TEMP/files.jsonl"
           dpkg-deb -f "$RUNNER_TEMP/out/$file" Package Version | tee /dev/stderr | grep -qx "Version: $version" \
             || { echo "::error::o .deb não é da versão $version"; exit 1; }
+          for d in "$RUNNER_TEMP"/out/*.deb; do
+            dpkg-deb -f "$d" Version | grep -qx "$version" || { echo "::error::$(basename "$d") não é da versão $version"; exit 1; }
+          done
           if [ "$rpm" = true ]; then
             command -v rpm >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq rpm; }
-            rpm -qp --qf '%{NAME} %{VERSION}\n' "$RUNNER_TEMP/out/gines-$version-x86_64.rpm" | tee /dev/stderr | grep -qx "gines $version" \
-              || { echo "::error::o .rpm não é da versão $version"; exit 1; }
+            for r in "$RUNNER_TEMP"/out/*.rpm; do
+              rpm -qp --qf '%{NAME} %{VERSION}\n' "$r" | tee /dev/stderr | grep -qx "gines $version" \
+                || { echo "::error::$(basename "$r") não é da versão $version"; exit 1; }
+            done
+          fi
+          if [ "$arm" = true ]; then
+            [ -f pending/latest-linux-arm64.yml ] || { echo "::error::falta latest-linux-arm64.yml"; exit 1; }
+            cp pending/latest-linux-arm64.yml "$RUNNER_TEMP/out/"
           fi
           if [ "$mac" = true ]; then
             for a in arm64 x64; do
@@ -83,34 +94,34 @@ jobs:
           if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::a release v$version já existe; suba a versão no apps/electron/package.json"; exit 1; fi
           flag=""; [ "$prerelease" = "true" ] && flag="--prerelease"
-          cat > "$RUNNER_TEMP/notes.md" <<NOTES
-          **Linux:** \`$file\` (Ubuntu/Debian, x86-64), sha256 \`$sum\`
-          **Origem:** \`gines-client\` commit \`${commit:0:7}\`
-
-          \`\`\`sh
-          sha256sum -c $file.sha256
-          sudo apt install ./$file
-          \`\`\`
-          NOTES
-          if [ "$rpm" = true ]; then
-            cat >> "$RUNNER_TEMP/notes.md" <<NOTES
-
-          **Fedora/RHEL/openSUSE:** \`gines-$version-x86_64.rpm\`
-
-          \`\`\`sh
-          sudo dnf install ./gines-$version-x86_64.rpm      # openSUSE: sudo zypper install ./gines-$version-x86_64.rpm
-          \`\`\`
-          NOTES
-          fi
-          if [ "$mac" = true ]; then
-            cat >> "$RUNNER_TEMP/notes.md" <<NOTES
-
-          **macOS 12 ou mais novo:** \`gines-$version-arm64.dmg\` (Apple Silicon) ou \`gines-$version-x64.dmg\` (Intel).
-          Assinado (Developer ID) e notarizado pela Apple. Arraste o GINES para Aplicativos; as próximas versões chegam
-          sozinhas. Os \`.zip\` são do atualizador automático.
-          NOTES
-          fi
-          sed -i 's/^          //' "$RUNNER_TEMP/notes.md"
+          # Uma linha por pacote que veio nesta versão (o sha256 de cada um vai no .sha256 ao lado).
+          has() { [ -f "$RUNNER_TEMP/out/$1" ]; }
+          {
+            echo "**Origem:** \`gines-client\` commit \`${commit:0:7}\` · cada pacote tem o seu \`.sha256\`"
+            echo
+            echo "| Sistema | Intel/AMD (x86-64) | ARM (arm64) |"
+            echo "|---|---|---|"
+            row() { # sistema, arquivo x64, arquivo arm
+              local a="—" b="—"
+              has "$2" && a="\`$2\`"
+              has "$3" && b="\`$3\`"
+              [ "$a$b" = "——" ] || echo "| $1 | $a | $b |"
+            }
+            row "Ubuntu, Debian" "gines-$version-amd64.deb" "gines-$version-arm64.deb"
+            row "Fedora, RHEL, openSUSE" "gines-$version-x86_64.rpm" "gines-$version-aarch64.rpm"
+            row "macOS 12+" "gines-$version-x64.dmg" "gines-$version-arm64.dmg"
+            echo
+            echo '```sh'
+            echo "sudo apt install ./gines-$version-<arquitetura>.deb      # Ubuntu, Debian"
+            has "gines-$version-x86_64.rpm" && echo "sudo dnf install ./gines-$version-<arquitetura>.rpm      # Fedora, RHEL (openSUSE: zypper install)"
+            echo '```'
+            if [ "$mac" = true ]; then
+              echo
+              echo "macOS: assinado (Developer ID) e notarizado pela Apple; arraste o GINES para Aplicativos. Os \`.zip\` são do atualizador automático."
+            fi
+            echo
+            echo "As próximas versões chegam sozinhas (Ajustes → Versão)."
+          } > "$RUNNER_TEMP/notes.md"
           title="GINES Desktop $version (Linux)"; [ "$mac" = true ] && title="GINES Desktop $version (Linux e macOS)"
           gh release create "v$version" "$RUNNER_TEMP"/out/* -R "$GITHUB_REPOSITORY" --target main \
             --title "$title" --notes-file "$RUNNER_TEMP/notes.md" $flag
